@@ -1,13 +1,12 @@
 import random
 import hashlib
 
-EMBEDDING_DIM = 384  # matches your pgvector column
+EMBEDDING_DIM = 384  # must match pgvector column
 
 def embed_text(text: str):
     """
-    Deterministic mock embedding.
-    Same text -> same vector.
-    Enables full RAG flow without external API dependency.
+    Deterministic mock embeddings.
+    Same text → same vector.
     """
     seed = int(hashlib.sha256(text.encode("utf-8")).hexdigest(), 16)
     random.seed(seed)

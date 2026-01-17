@@ -1,6 +1,7 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from dotenv import load_dotenv
 import uuid
+import requests
 
 from app.db import supabase
 from app.chunking import chunk_text
@@ -8,11 +9,45 @@ from app.embeddings import embed_text
 
 load_dotenv()
 
-app = FastAPI()
+app = FastAPI(title="Mini RAG API")
 
+
+# ----------------------------
+# Ollama LLM Call
+# ----------------------------
+def call_llm(context: str, question: str):
+    prompt = f"""
+Answer the question using ONLY the context below.
+
+Context:
+{context}
+
+Question:
+{question}
+"""
+
+    response = requests.post(
+        "http://localhost:11434/api/generate",
+        json={
+            "model": "mistral",  # or "gemma:2b"
+            "prompt": prompt,
+            "stream": False
+        },
+        timeout=60
+    )
+
+    return response.json()["response"]
+
+
+# ----------------------------
+# Upload Document
+# ----------------------------
 @app.post("/documents")
 async def upload_document(file: UploadFile = File(...)):
-    content = (await file.read()).decode("utf-8")
+    if not file.filename.endswith((".txt", ".md")):
+        raise HTTPException(status_code=400, detail="Only .txt or .md files allowed")
+
+    content = (await file.read()).decode("utf-8", errors="ignore")
 
     doc_id = str(uuid.uuid4())
 
@@ -25,6 +60,7 @@ async def upload_document(file: UploadFile = File(...)):
 
     for chunk in chunks:
         embedding = embed_text(chunk)
+
         supabase.table("document_chunks").insert({
             "document_id": doc_id,
             "content": chunk,
@@ -37,31 +73,49 @@ async def upload_document(file: UploadFile = File(...)):
         "chunk_count": len(chunks)
     }
 
+
+# ----------------------------
+# List Documents
+# ----------------------------
+@app.get("/documents")
+def list_documents():
+    res = supabase.table("documents").select("*").execute()
+    return {"documents": res.data}
+
+
+# ----------------------------
+# Query (RAG)
+# ----------------------------
 @app.post("/query")
 def query_docs(payload: dict):
-    question = payload["question"]
+    question = payload.get("question")
+
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is required")
 
     q_embedding = embed_text(question)
 
-    res = supabase.rpc("match_chunks", {
-        "query_embedding": q_embedding,
-        "match_count": 5
-    }).execute()
+    res = supabase.rpc(
+        "match_chunks",
+        {
+            "query_embedding": q_embedding,
+            "match_count": 5
+        }
+    ).execute()
 
-    context = "\n".join([r["content"] for r in res.data])
+    chunks = res.data or []
 
-    from openai import OpenAI
-    client = OpenAI()
+    if not chunks:
+        return {
+            "answer": "No relevant information found.",
+            "sources": []
+        }
 
-    answer = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Answer using only the given context"},
-            {"role": "user", "content": f"{context}\n\nQuestion: {question}"}
-        ]
-    )
+    context = "\n\n".join(chunk["content"] for chunk in chunks)
+
+    answer = call_llm(context, question)
 
     return {
-        "answer": answer.choices[0].message.content,
-        "sources": res.data
+        "answer": answer,
+        "sources": chunks
     }
