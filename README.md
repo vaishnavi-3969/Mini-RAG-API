@@ -31,7 +31,7 @@ generates answers grounded in the retrieved context.
 ### 2. Clone the Repository
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/vaishnavi-3969/Mini-RAG-API.git
 cd mini-rag-api
 ```
 
